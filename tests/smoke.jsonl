@@ -1,0 +1,5 @@
+{"id": "smoke_01", "input": "¿Qué cubre el seguro a todo riesgo?", "expected_type": "resolve", "topic": "coche", "expected_output_contains": ["cubre", "responsabilidad"]}
+{"id": "smoke_02", "input": "Se me ha roto una tubería y me ha inundado el salón, ¿qué hago?", "expected_type": "resolve", "topic": "hogar", "expected_output_contains": ["hogar", "parte"]}
+{"id": "smoke_03", "input": "¿Qué seguro necesita una compañía de teatro para actuar en festivales?", "expected_type": "resolve", "topic": "artes", "expected_output_contains": ["responsabilidad", "artistas"]}
+{"id": "smoke_04", "input": "Quiero contratar una póliza para mi compañía, ¿cuánto cuesta?", "expected_type": "derive", "topic": "artes", "expected_output_contains": ["contacta", "info@torresmack.com"]}
+{"id": "smoke_05", "input": "", "expected_type": "error", "topic": "validation", "expected_output_contains": ["INVALID_INPUT"]}
