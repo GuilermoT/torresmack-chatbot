@@ -24,7 +24,7 @@ def call_predict(input_text):
     resp = requests.post(
         BACKEND_URL,
         json={"input": input_text, "history": [], "options": {"temperature": 0.2, "max_tokens": 600}},
-        timeout=30,
+        timeout=60,
     )
     return resp.json()
 
