@@ -2,12 +2,13 @@ import os
 import time
 import uuid
 import json
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 from openai import OpenAI, APITimeoutError, APIConnectionError
 from dotenv import load_dotenv
+from rag import retrieve
 
 load_dotenv()
 
@@ -30,41 +31,31 @@ BASE_URL      = os.getenv("AZURE_OPENAI_BASE_URL", "")
 API_KEY       = os.getenv("AZURE_OPENAI_API_KEY", "")
 GROUP_ID      = os.getenv("GROUP_ID", "G5")
 LOG_PATH      = "logs.jsonl"
-
-TIMEOUT_S     = 15      # timeout por llamada en segundos
-MAX_RETRIES   = 1       # reintentos ante timeout o error de conexión
-MAX_TOKENS    = 600     # límite obligatorio de tokens de salida
+TIMEOUT_S     = 15
+MAX_RETRIES   = 1
+MAX_TOKENS    = 600
 
 SYSTEM_PROMPT = """Eres el asistente virtual de TorresMack Correduría de Seguros, especialistas en seguros de coche, hogar y artes escénicas.
 
-SOBRE TORREESMACK:
-- Correduría independiente con amplia experiencia en el sector asegurador
-- Especialistas únicos en seguros para artes escénicas: teatro, danza, música, festivales y giras
-- También gestionamos seguros de coche y hogar para particulares
-- Contacto: info@torresmack.com
+SOBRE TORRESMACK:
+- Correduría independiente especializada en artes escénicas: teatro, danza, música, festivales y giras
+- También gestionamos seguros de coche y hogar para particulares con MAPFRE
+- Contacto: info@torresmack.com — Teléfono: 981121408
 
 TU ROL:
-- Eres el primer punto de contacto para clientes con dudas
-- Informas, orientas y resuelves dudas frecuentes
+- Informas, orientas y resuelves dudas frecuentes usando el CONTEXTO que se te proporciona
 - NO contratas pólizas ni das precios exactos — eso lo hace el equipo humano
-- Si no sabes algo, di que no tienes esa información y deriva al equipo
-
-SEGUROS QUE GESTIONAMOS:
-1. Coche: todo riesgo, terceros ampliado, terceros básico. Cubre daños propios, responsabilidad civil, robo, incendio, asistencia en carretera.
-2. Hogar: cubre daños por agua, incendio, robo, responsabilidad civil, asistencia 24h. Disponible para propietarios e inquilinos.
-3. Artes escénicas: responsabilidad civil para espectáculos, accidentes de artistas y técnicos, daños al material escénico, cobertura para giras y festivales.
+- Si no sabes algo o no está en el contexto, deriva a info@torresmack.com
 
 CÓMO RESPONDER:
 - Responde siempre en español, con tono profesional pero cercano
-- Sé claro y conciso, sin tecnicismos innecesarios
-- Sé breve: máximo 4-5 puntos por respuesta, sin explicaciones largas. Si el cliente quiere más detalle, que contacte con info@torresmack.com
-- Si la consulta requiere presupuesto, contratación o información muy específica de una póliza, deriva siempre a info@torresmack.com
-- Ante un siniestro, da siempre instrucciones claras de los primeros pasos
-- No respondas sobre seguros que TorresMack no gestiona (salud, vida, mascotas, etc.)
-- Termina siempre ofreciendo ayuda adicional o el contacto si necesitan más información"""
+- Basa tus respuestas en el CONTEXTO proporcionado cuando sea relevante
+- Sé breve: máximo 4-5 puntos por respuesta
+- Si la consulta requiere presupuesto o contratación, deriva a info@torresmack.com
+- No respondas sobre seguros que TorresMack no gestiona (salud, vida, mascotas, etc.)"""
 
 # ──────────────────────────────────────────────
-# Modelos de entrada / salida
+# Modelos
 # ──────────────────────────────────────────────
 
 class Options(BaseModel):
@@ -87,7 +78,7 @@ class PredictResponse(BaseModel):
 # Logger
 # ──────────────────────────────────────────────
 
-def write_log(request_id: str, deployment: str, usage, latency_ms: int, exercise_id: str = "P12-S4"):
+def write_log(request_id, deployment, usage, latency_ms, exercise_id="P12-S5"):
     event = {
         "ts":                time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "group_id":          GROUP_ID,
@@ -112,19 +103,16 @@ def mock_provider(user_input: str) -> dict:
         "ok": True,
         "output": f"[MOCK] He recibido: {user_input[:200]}",
         "meta": {
-            "provider":           "mock",
-            "deployment":         None,
-            "latency_ms":         0,
-            "prompt_tokens":      0,
-            "completion_tokens":  0,
-            "total_tokens":       0,
-            "request_id":         None,
+            "provider": "mock", "deployment": None,
+            "latency_ms": 0, "prompt_tokens": 0,
+            "completion_tokens": 0, "total_tokens": 0,
+            "request_id": None, "rag_chunks": 0,
         }
     }
 
 
 # ──────────────────────────────────────────────
-# Provider Foundry (DeepSeek) con reintentos
+# Provider Foundry con RAG
 # ──────────────────────────────────────────────
 
 def foundry_provider(user_input: str, history: list, options: Options) -> dict:
@@ -136,7 +124,16 @@ def foundry_provider(user_input: str, history: list, options: Options) -> dict:
         max_retries=MAX_RETRIES,
     )
 
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    # RAG — recuperar contexto relevante
+    context = retrieve(user_input)
+    rag_chunks = len(context.split("---")) if context else 0
+
+    # Construir mensajes con contexto RAG
+    system_with_context = SYSTEM_PROMPT
+    if context:
+        system_with_context += f"\n\nCONTEXTO RELEVANTE DE LOS DOCUMENTOS DE TORRESMACK:\n{context}"
+
+    messages = [{"role": "system", "content": system_with_context}]
     for msg in history:
         messages.append(msg)
     messages.append({"role": "user", "content": user_input})
@@ -165,6 +162,7 @@ def foundry_provider(user_input: str, history: list, options: Options) -> dict:
             "completion_tokens":  resp.usage.completion_tokens,
             "total_tokens":       resp.usage.total_tokens,
             "request_id":         request_id,
+            "rag_chunks":         rag_chunks,
         }
     }
 
@@ -175,15 +173,10 @@ def foundry_provider(user_input: str, history: list, options: Options) -> dict:
 
 @app.post("/predict", response_model=PredictResponse)
 def predict(req: PredictRequest):
-    # Validación de entrada
     if not req.input or not req.input.strip():
         return PredictResponse(
             ok=False,
-            error={
-                "code":    "INVALID_INPUT",
-                "message": "El mensaje no puede estar vacío.",
-                "details": {"field": "input"}
-            }
+            error={"code": "INVALID_INPUT", "message": "El mensaje no puede estar vacío.", "details": {"field": "input"}}
         )
 
     try:
@@ -195,42 +188,15 @@ def predict(req: PredictRequest):
         return PredictResponse(ok=result["ok"], output=result["output"], meta=result["meta"])
 
     except APITimeoutError:
-        return PredictResponse(
-            ok=False,
-            error={
-                "code":    "TIMEOUT",
-                "message": "El servicio ha tardado demasiado en responder. Inténtalo de nuevo.",
-                "details": {"timeout_s": TIMEOUT_S}
-            }
-        )
+        return PredictResponse(ok=False, error={"code": "TIMEOUT", "message": "El servicio ha tardado demasiado. Inténtalo de nuevo.", "details": {"timeout_s": TIMEOUT_S}})
 
     except APIConnectionError:
-        return PredictResponse(
-            ok=False,
-            error={
-                "code":    "CONNECTION_ERROR",
-                "message": "No se puede conectar con el servicio de IA. Inténtalo de nuevo.",
-                "details": {}
-            }
-        )
+        return PredictResponse(ok=False, error={"code": "CONNECTION_ERROR", "message": "No se puede conectar con el servicio. Inténtalo de nuevo.", "details": {}})
 
     except Exception as e:
-        return PredictResponse(
-            ok=False,
-            error={
-                "code":    "INTERNAL_ERROR",
-                "message": "Ha ocurrido un error procesando tu consulta. Inténtalo de nuevo.",
-                "details": {"exception": str(e)}
-            }
-        )
+        return PredictResponse(ok=False, error={"code": "INTERNAL_ERROR", "message": "Ha ocurrido un error procesando tu consulta. Inténtalo de nuevo.", "details": {"exception": str(e)}})
 
 
 @app.get("/health")
 def health():
-    return {
-        "status":     "ok",
-        "provider":   LLM_PROVIDER,
-        "deployment": DEPLOYMENT,
-        "timeout_s":  TIMEOUT_S,
-        "max_tokens": MAX_TOKENS,
-    }
+    return {"status": "ok", "provider": LLM_PROVIDER, "deployment": DEPLOYMENT, "timeout_s": TIMEOUT_S, "max_tokens": MAX_TOKENS}
