@@ -1,9 +1,25 @@
 # TorresMack — Asistente de Seguros 🎭
 
-Chatbot de atención al cliente para TorresMack Correduría de Seguros.  
-Responde dudas sobre seguros de **coche**, **hogar** y **artes escénicas**.
+Chatbot de atención al cliente para TorresMack Correduría de Seguros.
+Responde dudas sobre seguros de **coche**, **hogar** y **artes escénicas** usando RAG (Retrieval-Augmented Generation) con documentos reales de la correduría.
 
 > Práctica 12 · Guillermo Torres Lamas (G5)
+
+---
+
+## Arquitectura
+
+```
+Usuario (index.html)
+        ↓
+POST /predict (FastAPI)
+        ↓
+RAG — ChromaDB + sentence-transformers
+        ↓
+DeepSeek-V4-Flash (Azure AI Foundry)
+        ↓
+Respuesta + logs.jsonl
+```
 
 ---
 
@@ -13,16 +29,20 @@ Responde dudas sobre seguros de **coche**, **hogar** y **artes escénicas**.
 torresmack-chatbot/
 ├── backend/
 │   ├── main.py              # API FastAPI con POST /predict
+│   ├── rag.py               # Módulo RAG (ChromaDB + embeddings)
 │   ├── requirements.txt
-│   ├── .env.example         # Plantilla de variables de entorno
-│   └── logs.jsonl           # Registro de llamadas al modelo
+│   └── .env.example         # Plantilla de variables de entorno
 ├── ui/
-│   ├── app.py               # Interfaz Gradio
+│   ├── index.html           # Widget de chat flotante
+│   ├── app.py               # Interfaz Gradio (alternativa)
 │   └── requirements.txt
 ├── tests/
-│   └── smoke.jsonl          # Casos de prueba básicos
-├── data/
-│   └── .gitkeep
+│   ├── smoke.jsonl          # 25 casos de prueba
+│   └── test_smoke.py        # Suite de tests con pytest
+├── data/                    # Documentos indexados por RAG
+│   ├── artes_escenicas.txt
+│   ├── siniestros_coche.txt
+│   └── siniestros_hogar.txt
 ├── .gitignore
 └── README.md
 ```
@@ -65,12 +85,12 @@ cp backend/.env.example backend/.env
 
 | Variable | Descripción | Requerida |
 |---|---|---|
-| `LLM_PROVIDER` | `mock` o `foundry` (usa mock si está vacía) | No |
+| `LLM_PROVIDER` | `mock` o `foundry` | No (default: mock) |
 | `AZURE_OPENAI_ENDPOINT` | URL del recurso Azure AI Foundry | Solo con foundry |
 | `AZURE_OPENAI_BASE_URL` | URL base para las llamadas al modelo | Solo con foundry |
 | `AZURE_OPENAI_DEPLOYMENT_NAME` | Nombre del deployment (`DeepSeek-V4-Flash`) | Solo con foundry |
 | `AZURE_OPENAI_API_KEY` | Clave de API de Azure | Solo con foundry |
-| `GROUP_ID` | Identificador del grupo (G1..G6) | No (default G1) |
+| `GROUP_ID` | Identificador del grupo (G1..G6) | No (default: G5) |
 
 > ⚠️ Nunca subas el `.env` al repositorio — está excluido en `.gitignore`
 
@@ -85,10 +105,19 @@ cd backend
 uvicorn main:app --reload --port 8000
 ```
 
-Disponible en: http://localhost:8000  
+La primera vez descarga el modelo de embeddings (~470MB). Verás:
+```
+[RAG] Índice listo — 165 fragmentos desde .../data
+```
+
+Disponible en: http://localhost:8000
 Documentación: http://localhost:8000/docs
 
-### Lanzar la UI (terminal 2)
+### Lanzar la UI — widget flotante (recomendado)
+
+Abre `ui/index.html` directamente en el navegador con doble clic.
+
+### Lanzar la UI — Gradio (alternativa)
 
 ```bash
 cd ui
@@ -96,6 +125,18 @@ python app.py
 ```
 
 Disponible en: http://localhost:7860
+
+---
+
+## Ejecutar los tests
+
+Con el backend corriendo en otra terminal:
+
+```bash
+pytest tests/test_smoke.py -v
+```
+
+**Resultado esperado:** 55 passed (25 casos × 2 tests + 5 tests adicionales)
 
 ---
 
@@ -108,10 +149,7 @@ Disponible en: http://localhost:7860
 {
   "input": "¿Qué cubre el seguro de hogar?",
   "history": [],
-  "options": {
-    "temperature": 0.2,
-    "max_tokens": 600
-  }
+  "options": { "temperature": 0.2, "max_tokens": 600 }
 }
 ```
 
@@ -127,7 +165,8 @@ Disponible en: http://localhost:7860
     "prompt_tokens": 104,
     "completion_tokens": 140,
     "total_tokens": 244,
-    "request_id": "uuid..."
+    "request_id": "uuid...",
+    "rag_chunks": 3
   }
 }
 ```
@@ -139,9 +178,7 @@ Disponible en: http://localhost:7860
   "error": {
     "code": "INVALID_INPUT",
     "message": "El mensaje no puede estar vacío.",
-    "details": {
-      "field": "input"
-    }
+    "details": { "field": "input" }
   }
 }
 ```
@@ -149,27 +186,32 @@ Disponible en: http://localhost:7860
 ### GET /health
 
 ```json
-{ "status": "ok", "provider": "foundry", "deployment": "DeepSeek-V4-Flash" }
+{
+  "status": "ok",
+  "provider": "foundry",
+  "deployment": "DeepSeek-V4-Flash",
+  "timeout_s": 15,
+  "max_tokens": 600
+}
 ```
 
 ---
 
 ## Logs
 
-Cada llamada al modelo se registra automáticamente en `backend/logs.jsonl`.
+Cada llamada al modelo se registra en `backend/logs.jsonl`:
 
-**Formato de cada entrada:**
 ```json
 {
-  "ts": "2026-05-29T17:45:20+0200",
+  "ts": "2026-06-07T13:44:00+0200",
   "group_id": "G5",
-  "exercise_id": "P12-S2",
+  "exercise_id": "P12-S5",
   "request_id": "uuid...",
   "deployment": "DeepSeek-V4-Flash",
-  "prompt_tokens": 104,
-  "completion_tokens": 140,
-  "total_tokens": 244,
-  "latency_ms": 3686
+  "prompt_tokens": 528,
+  "completion_tokens": 173,
+  "total_tokens": 701,
+  "latency_ms": 2363
 }
 ```
 
@@ -184,12 +226,39 @@ cat backend/logs.jsonl
 
 ---
 
-## Casos de prueba (smoke.jsonl)
+## Métricas de rendimiento
 
-| # | Input | Tipo esperado | Output obtenido |
-|---|-------|--------------|-----------------|
-| 1 | ¿Qué cubre el seguro a todo riesgo? | Resolver | Daños propios, RC, robo, incendio, asistencia en carretera |
-| 2 | Se me ha roto una tubería, ¿qué hago? | Resolver | Pasos: cortar agua, documentar, contactar TorresMack |
-| 3 | ¿Qué seguro necesita una compañía de teatro para una gira? | Resolver | RC espectáculos, accidentes, material escénico, cobertura gira |
-| 4 | Quiero contratar una póliza, ¿cuánto cuesta? | Derivar | Deriva a info@torresmack.com |
-| 5 | (mensaje vacío) | Error | INVALID_INPUT |
+Medidas sobre **39 llamadas reales** a DeepSeek-V4-Flash:
+
+| Métrica | Valor |
+|---|---|
+| p50 (mediana) | 2.363 ms |
+| p95 | 8.543 ms |
+| Mínimo | 1.033 ms |
+| Máximo | 18.173 ms |
+
+## Estimación de coste
+
+| Parámetro | Valor |
+|---|---|
+| Tokens medios por request | 651 tokens |
+| Precio por token | 0,0003 € / 1.000 tokens |
+| **Coste estimado por 1k requests** | **≈ 0,20 €** |
+
+---
+
+## Casos de prueba
+
+| # | Input | Tipo | Tema |
+|---|-------|------|------|
+| 01 | ¿Qué cubre el seguro a todo riesgo? | Resolver | Coche |
+| 02 | Se me ha roto una tubería, ¿qué hago? | Resolver | Hogar |
+| 03 | ¿Qué seguro necesita una compañía de teatro para una gira? | Resolver | Artes |
+| 04 | ¿Cuál es la diferencia entre seguro para propietario e inquilino? | Resolver | Hogar |
+| 05 | ¿Está cubierto un técnico de sonido si se lesiona? | Resolver | Artes |
+| 06 | Me han robado el coche, ¿qué pasos tengo que seguir? | Resolver | Coche |
+| 07 | ¿El seguro cubre los daños al material escénico en transporte? | Resolver | Artes |
+| 08 | ¿Qué es la responsabilidad civil y para qué sirve? | Resolver | General |
+| 09 | Quiero contratar una póliza, ¿cuánto cuesta? | Derivar | General |
+| 10 | ¿Ofrecéis seguro de vida o de salud? | Fuera de scope | General |
+| 11–25 | Ver tests/smoke.jsonl | Varios | Varios |
